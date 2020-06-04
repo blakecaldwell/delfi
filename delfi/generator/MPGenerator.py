@@ -124,14 +124,15 @@ class MPGenerator(Default):
             self.proposal.reseed(self.gen_newseed())
 
     def start_workers(self):
-        pipes = [ mp.Pipe(duplex=True) for m in self.models ]
-        self.queue = mp.Queue()
-        self.workers = [ Worker(i, self.queue, pipes[i][1], self.models[i], self.summary, seed=self.rng.randint(low=0,high=2**31), verbose=self.verbose) for i in range(len(self.models)) ]
-        self.pipes = [ p[0] for p in pipes ]
+        #pipes = [ mp.Pipe(duplex=True) for m in self.models ]
+        #self.queue = mp.Queue()
+        self.workers = [ i for i in range(len(self.models)) ]
+        #self.workers = [ Worker(i, self.queue, pipes[i][1], self.models[i], self.summary, seed=self.rng.randint(low=0,high=2**31), verbose=self.verbose) for i in range(len(self.models)) ]
+        #self.pipes = [ p[0] for p in pipes ]
 
         self.log("Starting workers")
-        for w in self.workers:
-            w.start()
+        #for w in self.workers:
+        #    w.start()
 
         self.log("Done")
 
@@ -140,16 +141,16 @@ class MPGenerator(Default):
             return
 
         self.log("Closing")
-        for w, p in zip(self.workers, self.pipes):
-            self.log("Closing pipe")
-            p.close()
+        #for w, p in zip(self.workers, self.pipes):
+        #    self.log("Closing pipe")
+        #    p.close()
 
         for w in self.workers:
             self.log("Joining process")
-            w.join(timeout=1)
-            w.terminate()
+            #w.join(timeout=1)
+            #w.terminate()
 
-        self.queue.close()
+        #self.queue.close()
 
         self.workers = None
         self.pipes = None
@@ -196,7 +197,7 @@ class MPGenerator(Default):
 
         return self.run_model(params, skip_feedback=skip_feedback, verbose=verbose, **kwargs)
 
-    def run_model(self, params, minibatch=50, skip_feedback=False, keep_data=True, verbose=False):
+    def run_model(self, params, minibatch=1, skip_feedback=False, keep_data=True, verbose=False):
         # Run forward model for params (in batches)
         if not verbose:
             pbar = no_tqdm()
@@ -207,41 +208,66 @@ class MPGenerator(Default):
                 desc += verbose
             pbar.set_description(desc)
 
+        from mpi4py import MPI
+
+        def enum(*sequential, **named):
+            """Handy way to fake an enumerated type in Python
+            http://stackoverflow.com/questions/36932/how-can-i-represent-an-enum-in-python
+            """
+            enums = dict(zip(sequential, range(len(sequential))), **named)
+            return type('Enum', (), enums)
+
+        # Define MPI message tags
+        tags = enum('READY', 'DONE', 'SLEEP', 'EXIT', 'START')
+
+        # Initializations and preliminaries
+        comm = MPI.COMM_WORLD   # get MPI communicator object
+        rank = comm.rank        # rank of this process
+        status = MPI.Status()   # get MPI status object
+
         self.start_workers()
+        num_workers = len(self.workers)
+        sleeping_workers = 0
+        task_index = 0
         final_params = []
         final_stats = []  # list of summary stats
-        minibatches = self.iterate_minibatches(params, minibatch)
+        minibatches = self.iterate_minibatches(params, 1)
         done = False
+
         with pbar:
-            while not done:
-                active_list = []
-                for w, p in zip(self.workers, self.pipes):
+            while sleeping_workers < num_workers:
+#            while not done:
+                data = comm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG, status=status)
+                source = status.Get_source()
+                tag = status.Get_tag()
+
+                if tag == tags.READY:
+                    # Worker is ready, so send it a task
                     try:
+                        # add the task_index to params for writing to disk
                         params_batch = next(minibatches)
                     except StopIteration:
                         done = True
-                        break
-
-                    active_list.append((w, p))
-                    self.log("Dispatching to worker (len = {})".format(len(params_batch)))
-                    p.send(params_batch)
+                        comm.isend(None, dest=source, tag=tags.SLEEP)
+                        continue
+                    print("Sending task %d to worker %d" % (task_index, source))
+                    self.log("Dispatching to worker")
+                    comm.send(np.append(params_batch,task_index), dest=source, tag=tags.START)
                     self.log("Done")
+                    task_index += 1
 
-                n_remaining = len(active_list)
-                while n_remaining > 0:
+                elif tag == tags.DONE:
                     self.log("Listening to worker")
-                    msg = self.queue.get()
-                    if type(msg) == int:
-                        self.log("Received int")
-                        pbar.update(msg)
-                    elif type(msg) == tuple:
-                        self.log("Received results")
-                        stats, params = self.filter_data(*msg, skip_feedback=skip_feedback)
-                        final_stats += stats
-                        final_params += params
-                        n_remaining -= 1
-                    else:
-                        self.log("Warning: Received unknown message of type {}".format(type(msg)))
+                    (agg_dpl, sim_params) = data
+                    print("Got data from worker %d" % (source))
+                    stats, temp_params = self.filter_data([ agg_dpl ], sim_params, skip_feedback=skip_feedback)
+                    final_stats += stats
+                    final_params += temp_params
+
+                    self.log("Received results")
+                elif tag == tags.SLEEP:
+                    print("Worker %d sleeping (%d running)" % (source, sleeping_workers))
+                    sleeping_workers += 1
 
         self.stop_workers()
 
@@ -249,10 +275,11 @@ class MPGenerator(Default):
 
         # n_samples x n_reps x dim theta
         params = np.array(final_params)
+        #params = params.squeeze(axis=1)
 
         # n_samples x n_reps x dim summary stats
         stats = np.array(final_stats)
-        stats = stats.squeeze(axis=1)
+        #stats = stats.squeeze(axis=1)
 
         return params, stats
 
