@@ -5,6 +5,7 @@ import os.path as op
 import numpy as np
 
 fitted_values1 = {
+    "dipole_scalefctr": 200000,
     't_evprox_1': 141.0,
     'sigma_t_evprox_1': 17,
     'numspikes_evprox_1': 10,
@@ -18,6 +19,7 @@ fitted_values1 = {
 }
 
 param_dict = {
+    "dipole_scalefctr": (60000, 200000),
     't_evprox_1': (125,155),
     'sigma_t_evprox_1': (10,50),
     'numspikes_evprox_1': (1,20),

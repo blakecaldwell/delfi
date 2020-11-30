@@ -232,6 +232,13 @@ class HNNStats(BaseSummaryStats):
 
         return np.asarray(stats)
 
+
+def stat_rejection_kernel(stat):
+    if stat is None:
+        return 0
+    else:
+        return 1
+
 def dpl_rejection_kernel(dpl):
     if dpl.max() > 50 or dpl.min() < -100:
         return 0
@@ -305,10 +312,10 @@ res=pickle.load(inference_file)
 
 # training schedule
 n_train = len(res.unused_pilot_samples[0][:,0])
-n_rounds = 1
+#n_rounds = 1
 n_atoms = 100
 minibatch = 100
-proposal='prior'
+proposal='atomic'
 # fitting setup
 #epochs = 100
 epochs = 1000
@@ -333,7 +340,7 @@ plt.savefig('/users/bcaldwe2/scratch/delfi/%s_ntrain_%d-loss.png' % (params_inpu
 
 print("Master saving trained inference object")
 import pickle
-with open('../scratch/delfi/%s_%d_trained_inference.pickle'%(params_input['sim_prefix'], pilot_samples), 'wb') as inference_file:
+with open('../scratch/delfi/%s_%d_%s_trained_inference.pickle'%(params_input['sim_prefix'], pilot_samples, proposal), 'wb') as inference_file:
     pickle.dump(res, inference_file)
 
 print("Master done. Closing")

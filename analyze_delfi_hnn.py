@@ -231,6 +231,12 @@ class HNNStats(BaseSummaryStats):
 
         return np.asarray(stats)
 
+def stat_rejection_kernel(stat):
+    if stat is None:
+        return 0
+    else:
+        return 1
+
 def dpl_rejection_kernel(dpl):
     if dpl.max() > 50 or dpl.min() < -100:
         return 0
@@ -319,12 +325,22 @@ posterior = res.predict(res.obs)
 posterior_samples = posterior.gen(100000)
 
 #np.savez_compressed('/users/bcaldwe2/scratch/delfi/%s_posterior-samples-%d-%s'%(params_input['sim_prefix'], pilot_samples,date.today().isoformat()), *posterior_samples)
-
-from delfi.utils.viz import samples_nd
-
 prior_min = g.prior.lower
 prior_max = g.prior.upper
 prior_lims = np.concatenate((prior_min.reshape(-1,1),prior_max.reshape(-1,1)),axis=1)
+
+
+from delfi.utils.viz import samples_nd, plot_hist_marginals
+
+posterior_modes = np.empty(posterior_samples.shape[1])
+for param in range(posterior_samples.shape[1]):
+  hist, edges = np.histogram(posterior_samples[:,param], bins=100, range=(prior_min[param], prior_max[param]))
+  posterior_modes[param] = (edges[np.argmax(hist)] + edges[np.argmax(hist)+1])/2
+  #plot_hist_marginals(posterior_samples[:,param])
+  #plt.savefig('/users/bcaldwe2/scratch/delfi/%s_%s_%s_ntrain_%d_%s_%s-hist.png' % (params_input['sim_prefix'], exp_data_prefix, density, n_train, proposal, labels_params[param]))
+  #plt.xlabel(labels_params[param])
+#dist(posterior.eval(posterior_samples, log=False))
+print(posterior_modes)
 
 ###################
 # colors
@@ -341,7 +357,7 @@ col['SAMPLE2'] = hex2rgb('AF99EF')
 for k, v in col.items():
     col[k] = tuple([i/255 for i in v])
 
-print("Master genarting posterior plots...")
+print("Master generating posterior plots...")
 ###################
 # posterior
 fig, axes = samples_nd(posterior_samples,
@@ -351,8 +367,8 @@ fig, axes = samples_nd(posterior_samples,
                        fig_size=(35,35),
                        diag='kde',
                        upper='kde',
-                       hist_diag={'bins': 50},
-                       hist_offdiag={'bins': 50},
+                       hist_diag={'bins': 100},
+                       hist_offdiag={'bins': 100},
                        kde_diag={'bins': 50, 'color': col['SNPE']},
                        kde_offdiag={'bins': 50},
 #                       points=[fitted_params],
@@ -363,7 +379,7 @@ fig, axes = samples_nd(posterior_samples,
 
 plt.savefig('/users/bcaldwe2/scratch/delfi/%s_%s_%s_ntrain_%d_%s-posterior.eps' % (params_input['sim_prefix'], exp_data_prefix, density, n_train, proposal))
 
-fig = plt.figure(figsize=(7,5))
+fig = plt.figure(figsize=(10,7))
 
 y_obs = obs_stats[0]
 t = np.linspace(0, 130.0, num=len(y_obs))
@@ -374,11 +390,10 @@ duration = np.max(t)
 # get mean from posterior
 #x_mean = posterior.mean
 
-num_samp = 2
+num_samp = 0
 
 # sample from posterior
 x_samp = posterior.gen(n_samples=num_samp)
-
 # simulate and plot samples
 V = np.zeros((len(t),num_samp))
 for i in range(num_samp):
@@ -391,17 +406,22 @@ for i in range(num_samp):
     V[:,i] = x['data']
     plt.plot(t, V[:, i], color = col['SAMPLE'+str(i+1)], lw=2, label='sample '+str(num_samp-i))
 
-#x = m[0].gen_single(x_mean)
-#plt.plot(t, x['data'], color = col['SNPE'], lw=2, label='posterior mean')
+for idx, param in enumerate(posterior_modes):
+    if posterior_modes[idx] > prior_max[idx] or posterior_modes[idx] < prior_min[idx]:
+        posterior_modes[idx] = (prior_min[idx] + prior_max[idx])/2
+x = m[0].gen_single(posterior_modes)
+#print('number of spikes: %d' % x['numspikes'])
+plt.plot(t, x['data'], color = col['SNPE'], lw=1, label='posterior mode')
 
-# plot observation
+ # plot observation
 plt.plot(t, y_obs, '--',lw=2, label='observation')
 plt.xlabel('time (ms)')
 plt.ylabel('Dipole (nAm)')
 
 ax = plt.gca()
 handles, labels = ax.get_legend_handles_labels()
-ax.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.3, 1), loc='upper right')
+#ax.legend(handles[::-1], labels[::-1], bbox_to_anchor=(1.3, 1), loc='upper right')
+ax.legend(loc='upper right')
 
 plt.savefig('/users/bcaldwe2/scratch/delfi/%s_%s_ntrain_%d-observation.png' % (params_input['sim_prefix'], exp_data_prefix, n_train))
 

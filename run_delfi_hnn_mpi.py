@@ -140,9 +140,8 @@ if rank != 0:
         agg_dpl = temp_results[0]
         times = np.linspace(0, 130.0, num=len(agg_dpl))
         sim_params = temp_results[1]
-        rmse = sim_params[0]
+        spikes = sim_params[0]
         result_index = sim_params[2]
-        print("rmse for sim %d is %f"%(result_index, rmse))
         #np.savetxt('/users/bcaldwe2/scratch/delfi/sim_dipoles/%s_sim_%d.txt'%(params_input['sim_prefix'], result_index),(times,agg_dpl))
 
         #plt.plot(np.linspace(0, 130.0, num=len(agg_dpl)), agg_dpl)
@@ -334,13 +333,13 @@ if rank == 0:
         data = subcomm.recv(source=MPI.ANY_SOURCE, tag=MPI.ANY_TAG)
         agg_dpl = data[0]
         sim_params = data[1]
-        rmse = sim_params[0]
+        spikes = sim_params[0]
         result_index = sim_params[2]
 
         # send empty new_params to stop nrniv procs
         subcomm.bcast(None, root=MPI.ROOT)
 
-        return agg_dpl.reshape(-1,1)
+        return agg_dpl.reshape(-1,1), spikes
 
     from delfi.simulator.BaseSimulator import BaseSimulator
     
@@ -351,11 +350,13 @@ if rank == 0:
             Parameters
             ----------
             """
-#            dim_param = 28
             dim_param = len(prior_min)
     
             super().__init__(dim_param=dim_param, seed=seed)
             self.HNNsimulator = HNNsimulator
+
+            # begin task index for generator after all pilot_samples    
+            self.task_index=pilot_samples
     
         def gen_single(self, params):
             """Forward model for simulator for single parameter set
@@ -375,14 +376,14 @@ if rank == 0:
             from scipy import signal
 
             print(params.reshape(1, -1))
-            params = np.asarray(params)
+            params = np.append(np.asarray(params), self.task_index)
     
             assert params.ndim == 1, 'params.ndim must be 1'
     
-            states = self.HNNsimulator(params.reshape(1, -1))
+            states, numspikes = self.HNNsimulator(params.reshape(1, -1))
 
-            return {'data': states.reshape(-1)}
-#                    'rmse': rmse}
+            return {'data': states.reshape(-1),
+                    'numspikes': numspikes}
     
     from delfi.summarystats.BaseSummaryStats import BaseSummaryStats
     from scipy import stats as spstats
@@ -391,10 +392,9 @@ if rank == 0:
         """
         Calculates summary statistics
         """
-        def __init__(self, n_summary=104, seed=None):
+        def __init__(self, seed=None):
             """See SummaryStats.py for docstring"""
             super(HNNStats, self).__init__(seed=seed)
-            self.n_summary = n_summary
     
         def calc(self, repetition_list):
             """Calculate summary statistics
@@ -408,25 +408,125 @@ if rank == 0:
             -------
             np.array, 2d with n_reps x n_summary
             """
+            from math import ceil, floor
             stats = []
-            for r in range(len(repetition_list)):
+            for obs_index, r in enumerate(range(len(repetition_list))):
                 x = repetition_list[r]
-    
                 N = x['data'].shape[0]
-                #t = x['time']
-                #rmse = x['rmse']
+                numspikes = x['numspikes']
+                troughs = []
+                width = 5
+                prominence = 50
+                while len(troughs) == 0:
+                    troughs, _ = scipy.signal.find_peaks(-x['data'],width=width, prominence=prominence)
+                    if prominence < 2:
+                        print("failed to find trough")
+                        troughs = None
+                        break
+                    else:
+                        prominence -= 1
+
+                if len(troughs) > 1:
+                    # pick the lowest one
+                    index = np.where(troughs == troughs.max())
+                    temp = np.array([ troughs[index] ])
+                    troughs = temp
+
+                # find peak 1
+                width=4
+                height=1
+                lpeaks, lp_props = scipy.signal.find_peaks(x['data'][0:troughs[0]],height=height,width=width)
+                while True:
+                    old_lpeaks = lpeaks
+                    old_lp_props = lp_props
+                    lpeaks, lp_props = scipy.signal.find_peaks(x['data'][0:troughs[0]],height=height,width=width)
+                    if len(lpeaks) == 0:
+                        lpeaks = old_lpeaks
+                        lp_props = old_lp_props
+                        break
+                    else:
+                        height += 1
+
+                # in case we need to use a lot of smoothing
+                if len(lpeaks) == 0:
+                  lpeaks = scipy.signal.find_peaks_cwt(x['data'][0:troughs[0]], np.arange(10,20))
+                  lp_props = {'left_ips': [0]}
+
+                # find peak 2
+                width=4
+                height=1
+                right_data = np.array(x['data'])
+                right_data[0:troughs[0]+1] = 0
+                rpeaks, rp_props = scipy.signal.find_peaks(right_data,height=height,width=width)
+                while True:
+                    old_rpeaks = rpeaks
+                    old_rp_props = rp_props
+                    rpeaks, rp_props = scipy.signal.find_peaks(right_data,height=height,width=width)
+                    if len(rpeaks) == 0:
+                        rpeaks = old_rpeaks
+                        rp_props = old_rp_props
+                        break
+                    else:
+                        height += 1
+
+                # in case we need to use a lot of smoothing
+                if len(rpeaks) == 0:
+                  rpeaks = scipy.signal.find_peaks_cwt(right_data, np.arange(10,20))
+                  rp_props = {'right_ips': [len(x['data'])-1]}
+    
+    ##
+    #            if len(peaks) == 1:
+    #                if peaks[0] > len(x['data'])/2.0:
+    #                  peaks = np.insert(peaks, 0,np.where(x['data'] == x['data'][0:round(len(x['data'])/2.0)].max())[0][0])
+    #                  p_props['left_ips'] = np.insert(p_props['left_ips'], 0, 0)
+    #                  p_props['right_ips'] = np.insert(p_props['right_ips'], 0, peaks[0])
+    #                elif peaks[0] < len(x['data'])/2.0:
+    #                  peaks = peaks.append(np.where(x['data'] == x['data'][round(len(x['data'])/2.0):-1].max())[0][0])
+    #                  p_props['left_ips'] = np.append(p_props['left_ips'], peaks[1])
+    #                  p_props['right_ips'] = np.append(p_props['right_ips'], len(x['data']))
+    
+    
+    
+                dt = 130/len(x['data'])
+                t = np.linspace(0, 130.0, num=len(x['data']))
+                plt.plot(t, x['data'], '--',lw=1, label='observation')
+                plt.xlabel('time (ms)')
+                plt.ylabel('Dipole (nAm)')
+                slope1=slope2=slope3=slope4=amplitude=sharpness=None
+                if len(lpeaks) > 0 and len(rpeaks) > 0 and len(troughs) > 0:
+                    plt.vlines([lpeaks[0]*dt, floor(lp_props['left_ips'][0])*dt, rpeaks[0]*dt, troughs[0]*dt, ceil(rp_props['right_ips'][0])*dt],x['data'].min(),x['data'].max())
+                    plt.savefig('/users/bcaldwe2/scratch/delfi/obs_%d_%s.png' % (obs_index, exp_data_prefix))
+    
+                    slope1=(x['data'][lpeaks[0]]-x['data'][floor(lp_props['left_ips'][0])])/(dt*(lpeaks[0] - floor(lp_props['left_ips'][0])))
+                    slope2=(x['data'][troughs[0]]-x['data'][lpeaks[0]])/(dt*(troughs[0]-lpeaks[0]))
+                    slope3=(x['data'][rpeaks[0]]-x['data'][troughs[0]])/(dt*(rpeaks[0]-troughs[0]))
+                    slope4=(x['data'][ceil(rp_props['right_ips'][0])]-x['data'][rpeaks[0]])/(dt*(ceil(rp_props['right_ips'][0])-rpeaks[0]))
+                    print("Slope 1: %f" % (slope1))
+                    print("Slope 2: %f" % (slope2))
+                    print("Slope 3: %f" % (slope3))
+                    print("Slope 4: %f" % (slope4))
+    
+                    amplitude = max(x['data'][lpeaks[0]],x['data'][rpeaks[0]]) - x['data'][troughs[0]]
+                    sharpness = amplitude / (.5 * dt * (rpeaks[0]-lpeaks[0]))
     
                 sum_stats_vec = np.concatenate((
-                        np.array(x['data']),
-                 #       rmse
+                        np.array([x['numspikes']]),
+                        np.array([slope1,slope2,slope3,slope4]),
+                        np.array([amplitude,sharpness])
                     ))
-    
+                print(sum_stats_vec)
                 stats.append(sum_stats_vec)
     
             return np.asarray(stats)
 
     def dpl_rejection_kernel(dpl):
-        if dpl.max() > 50 or dpl.min() < -100:
+        if dpl.min() < -100 or dpl.max() > 100:
+            return 0
+        else:
+            return 1
+
+    def stat_rejection_kernel(stat):
+        if stat is None:
             return 0
         else:
             return 1
@@ -439,7 +539,8 @@ if rank == 0:
 
     # seeds
     seed_m = 1
- 
+
+    s = HNNStats() 
     m = []
     seeds_m = np.arange(1,n_processes+1,1)
     for i in range(n_processes):
@@ -494,7 +595,12 @@ if rank == 0:
                     seed=seed_inf,
                     pilot_samples=pilot_samples,
                     **inf_setup_opts)
-   
+
+    n_train = len(res.unused_pilot_samples[0][:,0])
+    if n_train < 100:
+        print("simulation results:")
+        print(res.unused_pilot_samples[1].shape)
+        print(res.unused_pilot_samples[1][0,:])
 
     print("Master saving inference object")
     import pickle

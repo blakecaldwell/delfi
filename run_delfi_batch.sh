@@ -12,7 +12,7 @@ jobno1=$(sbatch delfi.sbatch --export=NUM_SIMS=$NUM_SIMS |cut -d' ' -f4)
 jobno2=$(sbatch -d afterok:$jobno1 delfi-gpu.sbatch --export=NUM_SIMS=$NUM_SIMS |cut -d' ' -f4)
 export EXP_FNAME="$HOME/delfi/beta_event23.txt"
 jobno3=$(sbatch -d afterok:$jobno2 delfi-analyze.sbatch --export=EXP_FNAME=$EXP_FNAME --export=NUM_SIMS=$NUM_SIMS |cut -d' ' -f4)
-export EXP_FNAME="$HOME/delfi/beta_event43_scaled.txt"
+export EXP_FNAME="$HOME/delfi/beta_event43.txt"
 jobno4=$(sbatch -d afterok:$jobno2 delfi-analyze.sbatch --export=EXP_FNAME=$EXP_FNAME --export=NUM_SIMS=$NUM_SIMS |cut -d' ' -f4)
 
 trap "exitfn $jobno1 $jobno2 $jobno3 $jobno4" INT; 

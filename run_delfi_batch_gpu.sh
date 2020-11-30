@@ -5,7 +5,7 @@ exitfn(){
 }
 
 
-[[ $EXP_FNAME ]] || export EXP_FNAME="$HOME/delfi/beta_event43.txt"
+[[ $EXP_FNAME ]] || export EXP_FNAME="$HOME/delfi/beta_event23.txt"
 [[ $NUM_SIMS ]] || export NUM_SIMS=50000
 jobno=$(sbatch delfi-gpu.sbatch --export=EXP_FNAME=$EXP_FNAME --export=NUM_SIMS=$NUM_SIMS|cut -d' ' -f4)
 
